@@ -2,7 +2,7 @@
 #
 # ACKSTREET AGENT — one-command installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/ackstreet/ackstreet-agent/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ObadiaNgenoh/ackstreet-agent/main/install.sh | bash
 #
 # or from a clone:
 #
@@ -13,7 +13,7 @@
 #
 set -euo pipefail
 
-REPO_URL="${ACKSTREET_REPO_URL:-https://github.com/ackstreet/ackstreet-agent.git}"
+REPO_URL="${ACKSTREET_REPO_URL:-https://github.com/ObadiaNgenoh/ackstreet-agent.git}"
 INSTALL_DIR="${ACKSTREET_INSTALL_DIR:-$HOME/.ackstreet/src}"
 VENV_DIR="${ACKSTREET_VENV_DIR:-$INSTALL_DIR/.venv}"
 MIN_PYTHON="3.9"

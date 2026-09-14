@@ -36,13 +36,13 @@ your recurring work the more you use it.
 ### One-command installer (Linux, macOS, WSL)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ackstreet/ackstreet-agent/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ObadiaNgenoh/ackstreet-agent/main/install.sh | bash
 ```
 
 Or from a clone:
 
 ```bash
-git clone https://github.com/ackstreet/ackstreet-agent.git
+git clone https://github.com/ObadiaNgenoh/ackstreet-agent.git
 cd ackstreet-agent
 ./install.sh
 ```

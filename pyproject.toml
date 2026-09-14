@@ -45,9 +45,9 @@ dev = [
 ackstreet = "ackstreet.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/ackstreet/ackstreet-agent"
-Repository = "https://github.com/ackstreet/ackstreet-agent"
-Issues = "https://github.com/ackstreet/ackstreet-agent/issues"
+Homepage = "https://github.com/ObadiaNgenoh/ackstreet-agent"
+Repository = "https://github.com/ObadiaNgenoh/ackstreet-agent"
+Issues = "https://github.com/ObadiaNgenoh/ackstreet-agent/issues"
 
 [tool.setuptools]
 packages = [
