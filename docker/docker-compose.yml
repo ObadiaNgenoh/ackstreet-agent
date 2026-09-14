@@ -1,0 +1,69 @@
+# ACKSTREET AGENT — Docker Compose.
+#
+#   cd ackstreet-agent
+#   cp .env.example .env        # then fill in a provider key
+#   docker compose -f docker/docker-compose.yml up -d --build
+#   docker compose -f docker/docker-compose.yml exec ackstreet ackstreet chat
+#
+# The named volumes keep the agent's config, learned skills and memory across
+# container rebuilds — that persistence is the whole point of the framework.
+
+services:
+  ackstreet:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: ackstreet-agent:latest
+    container_name: ackstreet-agent
+    restart: unless-stopped
+
+    # Keep stdin open and allocate a TTY so `docker compose exec ... chat` works.
+    stdin_open: true
+    tty: true
+
+    environment:
+      # --- provider keys (read from .env) ---
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CUSTOM_API_KEY: ${CUSTOM_API_KEY:-}
+      # --- web search (optional) ---
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      SERPER_API_KEY: ${SERPER_API_KEY:-}
+      BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      # --- agent behaviour ---
+      ACKSTREET_AGENT_PROVIDER: ${ACKSTREET_AGENT_PROVIDER:-openai}
+      ACKSTREET_AGENT_MODEL: ${ACKSTREET_AGENT_MODEL:-}
+      ACKSTREET_AGENT_MAX_STEPS: ${ACKSTREET_AGENT_MAX_STEPS:-25}
+      # --- state location (must match the volume mount below) ---
+      ACKSTREET_HOME: /home/ackstreet/.ackstreet
+
+    volumes:
+      # Everything the agent learns or writes. Do not remove this if you want
+      # skills and memory to survive a rebuild.
+      - ackstreet-home:/home/ackstreet/.ackstreet
+      # Drop files here to give the agent something to work on.
+      - ./workspace:/home/ackstreet/work
+
+    working_dir: /home/ackstreet/work
+
+    # If you run a model on the host (Ollama, LM Studio, vLLM), this lets the
+    # container reach it as http://host.docker.internal:<port>.
+    # Set providers.<name>.base_url accordingly inside the container.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    healthcheck:
+      test: ["CMD", "ackstreet", "config", "path"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # The agent executes shell commands by design. Keep the obvious footguns
+    # out of reach unless you have decided you want them.
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  ackstreet-home:
+    driver: local
