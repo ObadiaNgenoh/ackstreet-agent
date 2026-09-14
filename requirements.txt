@@ -1,0 +1,19 @@
+# Runtime dependencies for ACKSTREET AGENT.
+#
+# The framework deliberately keeps this list tiny so it installs cleanly on a
+# bare VM: one HTTP client, and a TOML reader only where the stdlib lacks one.
+#
+#   pip install -r requirements.txt
+
+httpx>=0.27
+tomli>=2.0; python_version < "3.11"
+
+# --- optional -------------------------------------------------------------
+# Better YAML parsing for skill frontmatter. The registry includes a built-in
+# fallback parser, so this is not required.
+# PyYAML>=6.0
+#
+# Development and testing.
+# pytest>=8.0
+# pytest-cov>=5.0
+# ruff>=0.5
