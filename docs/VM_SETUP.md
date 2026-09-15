@@ -224,7 +224,59 @@ crontab -e
 
 ---
 
-## 9. Docker on the VM
+## 9. Drive it from Telegram or WhatsApp (optional)
+
+Both connectors work on a VM behind NAT — Telegram uses long polling and WhatsApp
+uses the outbound multi-device socket, so **you never need to open a port or set
+up a webhook.**
+
+```bash
+# Telegram
+ackstreet connect telegram --token 123456789:AAE...xyz   # from @BotFather
+ackstreet connect telegram --allow-user 123456789        # lock it to you
+ackstreet serve telegram
+
+# WhatsApp (unofficial protocol -- see the warning in the README)
+pip install 'ackstreet-agent[whatsapp]'
+ackstreet connect whatsapp        # scan the QR with your phone
+ackstreet serve whatsapp
+```
+
+To keep a connector running after a reboot, replace the idle keep-alive service in
+section 8 with one that runs the listener:
+
+```bash
+sudo tee /etc/systemd/system/ackstreet-telegram.service >/dev/null <<EOF
+[Unit]
+Description=ACKSTREET AGENT (Telegram connector)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$USER
+EnvironmentFile=$HOME/.ackstreet/.env
+Environment=ACKSTREET_HOME=$HOME/.ackstreet
+WorkingDirectory=$HOME
+ExecStart=$HOME/.ackstreet/src/.venv/bin/ackstreet serve telegram
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now ackstreet-telegram
+journalctl -u ackstreet-telegram -f
+```
+
+> **Set the allowlist first.** A bot with an empty allowlist is open to anyone who
+> finds it, and it can run shell commands on this VM. See the security checklist.
+
+---
+
+## 9b. Docker on the VM
 
 If you would rather not install Python on the host:
 
@@ -282,6 +334,10 @@ it with the same care as giving someone an SSH login.
       procedure blindly in production.
 - [ ] **Container isolation** (section 9) gives you a much tighter blast radius
       than a bare host install if you are running untrusted tasks.
+- [ ] **Set the connector allowlist before exposing a bot.** An empty allowlist
+      means anyone who can message the bot can run shell commands here. Add ids
+      with `ackstreet connect <platform> --allow-user <id>`, and check with
+      `ackstreet connectors`. Keep `allow_group_chats` off unless you mean it.
 - [ ] **Audit the transcripts** in `~/.ackstreet/memory/sessions/` — they record
       every command the agent ran.
 
@@ -297,6 +353,7 @@ it with the same care as giving someone an SSH login.
 | `HTTP 404` in `doctor` | wrong `base_url` or model name | `ackstreet config show` to inspect |
 | `cannot reach http://localhost:11434` | Ollama not running | `ollama serve &` |
 | `model 'x' was not found` | model not pulled | `ollama pull x` |
+| `snap-confine`/DPKG failure on Ubuntu 24.04 | unrelated snapd issue | `sudo systemctl restart snapd`, then retry |
 | Agent silently does nothing | no provider key resolved | `ackstreet doctor`, check section 3 |
 | Config file corrupt after editing by hand | invalid TOML | `ackstreet config show` fails loudly; restore from `~/.ackstreet/config.toml` backup |
 
