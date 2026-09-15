@@ -1,4 +1,4 @@
-# ARCHITECTURE
+# Architecture
 
 How ACKSTREET AGENT is put together, and why.
 
@@ -34,14 +34,14 @@ Everything the agent does funnels through one synchronous loop in
     │              │            │ role="tool" message    │
     │              │            └───────────┬────────────┘
     │              │                        │
-    │              │              ┌─────────┴─────────┐
-    │              │              v                   v
+    │              │              ┌─────────┴──────────┐
+    │              │              v                    v
     │              │        step budget hit       repeat detected
-    │              │              │                   │
-    │              └──────────────┘                   │
-    │                     continue                    │
-    │                                                 v
-    └─────────────────────────────────────────────  stop, report
+    │              │              │                    │
+    │              └──────────────┘                    │
+    │                     continue                     │
+    │                                                  v
+    └──────────────────────────────────────────  stop, report
                                 │
                                 v
         ┌─────────────────────────────────────────────────┐
@@ -142,6 +142,27 @@ Two design decisions worth calling out:
 - **Path resolution is workspace-relative by default.** A model-supplied relative path
   lands inside `~/.ackstreet/workspace`; absolute paths are honoured. This keeps an
   agent's scratch work predictable.
+
+### 3a. Safety / approval gate (`safety.py`)
+
+The agent can run shell commands, overwrite files and execute Python, so
+`safety.py` decides whether each dangerous call runs. `ApprovalPolicy.review()`
+returns an `ApprovalDecision` in three layers:
+
+1. **Denylist** — refused outright, in every mode, before any prompt. Even a
+   human "yes" cannot override it.
+2. **Mode** — `auto` permits; `ask` requires a human; `allowlist` permits calls
+   matching a rule and requires a human for the rest.
+3. **Prompt** — if a human is needed and an approver callback exists, it is
+   asked; with no approver (a non-interactive `run`) the call is **refused**,
+   never silently allowed.
+
+A refusal returns a failed `ToolResult`, so the model sees an ordinary error it
+can adapt to instead of the loop crashing. `ackstreet doctor` warns while the
+mode is `auto`. The command blocklist in `tools.blocked_commands` is screened
+later, inside `ShellTool`, as an independent second layer.
+
+---
 
 ### 4. Skills (`skills/`)
 
