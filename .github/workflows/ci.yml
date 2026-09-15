@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Cancel superseded runs on the same ref so a fast push does not queue behind
+# an older, slower one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install lint tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ruff>=0.5"
+
+      - name: Ruff
+        # Same invocation as `make lint`.
+        run: ruff check ackstreet tests scripts
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,yaml]"
+
+      - name: Verify the CLI entry point is installed
+        run: |
+          ackstreet --version
+          ackstreet --help > /dev/null
+
+      - name: Show resolved versions
+        run: |
+          python --version
+          python -m pytest --version
+
+      - name: Run tests
+        # Matches `make test`: pytest reads testpaths/addopts from pyproject.toml.
+        # No API key and no network are required — the suite uses an in-process
+        # scripted provider.
+        run: python -m pytest -q
+
+  smoke:
+    name: End-to-end smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,yaml]"
+
+      - name: Prove the agent loop end to end
+        # Drives the real CLI against the bundled mock OpenAI-compatible server
+        # and asserts the artifacts landed on disk. Exits non-zero on failure.
+        # The script auto-detects the interpreter, so it works without a .venv.
+        run: bash scripts/e2e_demo.sh
+
+      - name: Prove the chat-connector loop end to end
+        # Drives the real TelegramConnector + MessageRouter + approval gate
+        # against a local fake Bot API and a local OpenAI-compatible model.
+        # No bot token and no external network required.
+        run: bash scripts/connector_e2e.sh
+
+      - name: Upload the agent's workspace on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          # The throwaway agent home the demo writes into.
+          path: /tmp/ackstreet-e2e/
+          if-no-files-found: ignore
+          retention-days: 7
