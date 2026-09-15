@@ -22,7 +22,6 @@ from ackstreet.providers.base import (
     parse_tool_arguments,
 )
 
-
 # -- argument parsing ------------------------------------------------------
 
 def test_parse_tool_arguments_valid_json() -> None:

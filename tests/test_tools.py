@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from ackstreet.config import Config
-from ackstreet.tools import ToolRegistry, build_default_registry
-from ackstreet.tools.base import Tool, ToolResult
+from ackstreet.tools import build_default_registry
+from ackstreet.tools.base import ToolResult
 from ackstreet.tools.files import EditFileTool, ReadFileTool, SearchFilesTool, WriteFileTool
 from ackstreet.tools.python_exec import PythonExecTool
 from ackstreet.tools.shell import ShellTool
-
 
 # -- registry --------------------------------------------------------------
 

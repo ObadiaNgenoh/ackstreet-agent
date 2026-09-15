@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from conftest import ScriptedProvider, final, tool_call
 
-import pytest
-
-from ackstreet.agent import REPEAT_LIMIT, Agent
+from ackstreet.agent import Agent
 from ackstreet.config import Config
 from ackstreet.memory import MemoryStore
 from ackstreet.skills.registry import SkillRegistry
-
-from conftest import ScriptedProvider, final, tool_call
 
 SAMPLE_BODY = """\
 ## When to Use

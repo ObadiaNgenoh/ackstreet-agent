@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from ackstreet.errors import SkillError
 from ackstreet.skills.curator import SkillCurator
 from ackstreet.skills.registry import (
     SkillRegistry,
@@ -86,7 +87,7 @@ def test_create_and_get(tmp_path: Path) -> None:
 def test_create_duplicate_requires_overwrite(tmp_path: Path) -> None:
     registry = SkillRegistry(tmp_path / "skills")
     registry.create(name="dup", description="first", body=SAMPLE_BODY)
-    with pytest.raises(Exception):
+    with pytest.raises(SkillError):
         registry.create(name="dup", description="second", body=SAMPLE_BODY)
 
     replaced = registry.create(
@@ -111,7 +112,7 @@ def test_update_replaces_and_appends(tmp_path: Path) -> None:
 
 def test_update_missing_skill_raises(tmp_path: Path) -> None:
     registry = SkillRegistry(tmp_path / "skills")
-    with pytest.raises(Exception):
+    with pytest.raises(SkillError):
         registry.update("ghost", body="x")
 
 
