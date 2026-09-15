@@ -14,7 +14,7 @@ MOCK_PORT  ?= 8099
 
 .DEFAULT_GOAL := help
 
-.PHONY: help venv install install-dev test test-cov lint fmt typecheck e2e mock clean build docker-build docker-run dist doctor skills
+.PHONY: help venv install install-dev test test-cov lint fmt typecheck e2e e2e-connectors mock clean build docker-build docker-run dist doctor skills
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -58,6 +58,9 @@ mock: ## Start the mock OpenAI-compatible server (foreground)
 
 e2e: ## Run the end-to-end proof against the mock provider
 	@bash scripts/e2e_demo.sh
+
+e2e-connectors: ## Prove the chat-connector loop (fake Bot API + mock model)
+	@bash scripts/connector_e2e.sh
 
 build: ## Build sdist and wheel into dist/
 	@$(PIP) install --quiet build

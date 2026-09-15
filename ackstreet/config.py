@@ -76,6 +76,14 @@ DEFAULTS: Dict[str, Any] = {
         "context_messages": 40,     # how many past messages to send to the model
         "auto_curate": True,        # propose a skill after a finished session
         "auto_load_skill": True,    # inject the skills index into the system prompt
+        # Approval gate for dangerous tools (shell, write_file, edit_file,
+        # delete_file, python, save_skill, update_skill).
+        #   "auto"      run them without asking (default; `doctor` warns)
+        #   "ask"       ask a human before every dangerous call
+        #   "allowlist" run calls matching approval_allowlist, ask for the rest
+        "approval_mode": "auto",
+        "approval_allowlist": [],   # e.g. ["ls", "git status*", "read_file:docs/*"]
+        "approval_denylist": [],    # refused in EVERY mode, even "auto"
     },
     "providers": {
         "openai": {
@@ -128,6 +136,33 @@ DEFAULTS: Dict[str, Any] = {
         "enabled": True,
         "min_steps_to_curate": 3,
     },
+    "connectors": {
+        # Chat-platform bridges. Each connector only moves text in and out of
+        # the same agent loop the CLI uses, so the approval gate still applies.
+        "enabled": True,
+        # SECURITY: empty means ANY user who can reach the bot may drive the
+        # agent on this machine. Set explicit ids, or "*" to allow everyone
+        # on purpose. `ackstreet doctor` warns while this is empty.
+        "allowed_user_ids": [],
+        "allow_group_chats": False,
+        # How long a chat keeps its conversation context while idle (seconds).
+        "session_ttl": 3600,
+        # How long to wait for a yes/no answer to an approval prompt.
+        # A timeout is always a refusal.
+        "approval_timeout": 300,
+        "telegram": {
+            "bot_token": "",
+            "allowed_user_ids": [],
+            "allow_group_chats": False,
+            "update_offset": 0,
+        },
+        "whatsapp": {
+            # Empty = <ACKSTREET home>/whatsapp/session.db
+            "session_path": "",
+            "allowed_user_ids": [],
+            "allow_group_chats": False,
+        },
+    },
 }
 
 
@@ -164,6 +199,26 @@ def _coerce(value: str) -> Any:
     except ValueError:
         pass
     return value
+
+
+#: Environment variables that override a provider's ``base_url``, in priority
+#: order. These let a container, CI job or VM point a provider at a different
+#: endpoint (a proxy, a mock server, a self-hosted gateway) without editing
+#: ``config.toml``.
+PROVIDER_BASE_URL_ENVS: Dict[str, tuple] = {
+    "openai": ("OPENAI_BASE_URL", "OPENAI_API_BASE"),
+    "anthropic": ("ANTHROPIC_BASE_URL",),
+    "ollama": ("OLLAMA_HOST",),
+    "custom": ("CUSTOM_BASE_URL",),
+}
+
+#: Environment variables that override a provider's ``model``.
+PROVIDER_MODEL_ENVS: Dict[str, tuple] = {
+    "openai": ("OPENAI_MODEL",),
+    "anthropic": ("ANTHROPIC_MODEL",),
+    "ollama": ("OLLAMA_MODEL",),
+    "custom": ("CUSTOM_MODEL",),
+}
 
 
 def _apply_env_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -250,6 +305,7 @@ class ProviderConfig:
     base_url: str
     model: str
     api_key: str = ""
+    api_key_env: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -272,7 +328,7 @@ class Config:
     # -- construction ------------------------------------------------------
 
     @classmethod
-    def load(cls, path: Optional[Path] = None) -> "Config":
+    def load(cls, path: Optional[Path] = None) -> Config:
         """Load defaults, layer the TOML file, then environment overrides."""
         target = Path(path).expanduser() if path else config_path()
         data = copy.deepcopy(DEFAULTS)
@@ -380,7 +436,18 @@ class Config:
         if key_env:
             api_key = os.environ.get(key_env, "")
 
+        base_url = (raw.get("base_url") or "").rstrip("/")
+        for env_name in PROVIDER_BASE_URL_ENVS.get(chosen, ()):
+            if os.environ.get(env_name):
+                base_url = os.environ[env_name].rstrip("/")
+                break
+
+        # Precedence: provider-specific env var > agent.model > provider model.
         model = self.get("agent", "model", "") or raw.get("model", "")
+        for env_name in PROVIDER_MODEL_ENVS.get(chosen, ()):
+            if os.environ.get(env_name):
+                model = os.environ[env_name]
+                break
 
         extra = {
             k: v for k, v in raw.items()
@@ -390,9 +457,10 @@ class Config:
         return ProviderConfig(
             name=chosen,
             type=raw.get("type", "openai"),
-            base_url=(raw.get("base_url") or "").rstrip("/"),
+            base_url=base_url,
             model=model,
             api_key=api_key,
+            api_key_env=key_env,
             extra=extra,
         )
 
@@ -405,6 +473,18 @@ class Config:
         return DEFAULT_SYSTEM_PROMPT.format(
             agent_name=self.get("agent", "name", "Ackstreet")
         )
+
+
+    # -- safety ------------------------------------------------------------
+
+    def approval_policy(self, approver=None):
+        """Build the approval gate for dangerous tools.
+
+        Imported lazily because :mod:`ackstreet.safety` imports this module.
+        """
+        from .safety import ApprovalPolicy
+
+        return ApprovalPolicy(self, approver=approver)
 
 
 def load_config(path: Optional[Path] = None) -> Config:

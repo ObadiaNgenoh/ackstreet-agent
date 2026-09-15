@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "ACKSTREET AGENT contributors" }]
-keywords = ["ai", "agent", "llm", "assistant", "automation", "self-hosted", "skills"]
+keywords = ["ai", "agent", "llm", "assistant", "automation", "self-hosted", "skills", "telegram", "whatsapp", "chatbot"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -33,6 +33,23 @@ dependencies = [
 # Adds a real YAML parser for skill frontmatter (a dependency-free fallback
 # ships in ackstreet/skills/registry.py, so this is optional).
 yaml = ["PyYAML>=6.0"]
+# Telegram is implemented on httpx (a core dependency) and needs NO extra
+# package. The extra exists so `pip install 'ackstreet-agent[telegram]'` works
+# and documents the feature as a deliberate opt-in.
+telegram = ["httpx>=0.27"]
+# WhatsApp Web multi-device, via the neonize binding to whatsmeow.
+# Unofficial protocol: use at your own risk. qrcode is only for drawing the
+# login QR in the terminal -- without it the raw payload is printed instead.
+whatsapp = [
+  "neonize>=0.3.0",
+  "qrcode>=7.4",
+]
+# Everything.
+all = [
+  "PyYAML>=6.0",
+  "neonize>=0.3.0",
+  "qrcode>=7.4",
+]
 dev = [
   "pytest>=8.0",
   "pytest-cov>=5.0",
@@ -55,6 +72,7 @@ packages = [
   "ackstreet.providers",
   "ackstreet.tools",
   "ackstreet.skills",
+  "ackstreet.connectors",
 ]
 
 [tool.setuptools.package-data]
@@ -71,4 +89,14 @@ target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
-ignore = ["E501", "B008"]
+ignore = [
+  "E501",   # line length is handled by the formatter, not the linter
+  "B008",   # function calls in argument defaults are used deliberately
+  # The package supports Python 3.9, where `dict[str, int]` and `X | None`
+  # annotations are not valid at runtime. UP006/UP035/UP045 would rewrite the
+  # typing.* forms into syntax that breaks on 3.9, so they stay off until the
+  # floor is raised.
+  "UP006",
+  "UP035",
+  "UP045",
+]
