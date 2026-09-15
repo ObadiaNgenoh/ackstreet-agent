@@ -65,6 +65,7 @@ def build_provider(spec: ProviderConfig, timeout: float = 120.0) -> BaseProvider
         api_key=spec.api_key,
         timeout=timeout,
         extra=spec.extra,
+        api_key_env=spec.api_key_env,
     )
 
 

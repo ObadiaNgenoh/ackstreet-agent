@@ -8,7 +8,8 @@ when the daemon is unreachable.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -27,6 +28,9 @@ class OllamaProvider(BaseProvider):
     """Client for a local Ollama daemon."""
 
     supports_streaming = True
+    # A local daemon needs no credentials; requiring a key here would be wrong.
+    requires_api_key = False
+    default_key_env = ""
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -54,17 +58,51 @@ class OllamaProvider(BaseProvider):
 
         data = self._post(url, payload, self._headers())
 
-        message = data.get("message") or {}
+        if not isinstance(data, dict):
+            raise ProviderError(
+                f"{self.name}: expected a JSON object from {url}, got {type(data).__name__}",
+                body=str(data)[:400],
+            )
+
+        error = data.get("error")
+        if error:
+            raise ProviderError(
+                f"{self.name}: the Ollama daemon returned an error: {str(error)[:400]}"
+            )
+
+        message = data.get("message")
+        if message is None:
+            raise ProviderError(
+                f"{self.name}: response from {url} had no 'message' field",
+                body=json.dumps(data)[:400],
+            )
+        if not isinstance(message, dict):
+            raise ProviderError(
+                f"{self.name}: 'message' was {type(message).__name__}, expected an object",
+                body=json.dumps(data)[:400],
+            )
+
         calls: List[ToolCall] = []
         for index, raw_call in enumerate(message.get("tool_calls") or []):
-            function = raw_call.get("function") or {}
+            if not isinstance(raw_call, dict):
+                continue
+            function = raw_call.get("function")
+            if not isinstance(function, dict):
+                function = {}
+            name = function.get("name") or ""
+            if not name:
+                continue
             raw_args = function.get("arguments")
+            if raw_args is None or (isinstance(raw_args, str) and not raw_args.strip()):
+                raw_args = "{}"
             calls.append(
                 ToolCall(
                     id=raw_call.get("id") or f"call_{index}",
-                    name=function.get("name", ""),
+                    name=name,
                     arguments=parse_tool_arguments(raw_args),
-                    raw_arguments=raw_args if isinstance(raw_args, str) else json.dumps(raw_args or {}),
+                    raw_arguments=(
+                        raw_args if isinstance(raw_args, str) else json.dumps(raw_args or {})
+                    ),
                 )
             )
 

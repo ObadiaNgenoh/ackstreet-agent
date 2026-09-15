@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, FrozenSet, List, Optional
 
 import httpx
 
@@ -18,6 +20,49 @@ from ..errors import ProviderError
 
 # A callback receiving incremental text as it is generated.
 StreamCallback = Callable[[str], None]
+
+#: HTTP statuses worth retrying: transient rate limits, locks and server faults.
+RETRYABLE_STATUS: FrozenSet[int] = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
+
+@dataclass
+class RetryPolicy:
+    """How hard to retry a transient provider failure."""
+
+    max_attempts: int = 3
+    base_delay: float = 0.5
+    max_delay: float = 8.0
+    retry_statuses: FrozenSet[int] = RETRYABLE_STATUS
+
+    @classmethod
+    def from_extra(cls, extra: Optional[Dict[str, Any]] = None) -> RetryPolicy:
+        """Build from ``providers.<name>`` extras, ignoring junk values."""
+        extra = extra or {}
+
+        def as_int(key: str, default: int) -> int:
+            try:
+                return int(extra.get(key, default))
+            except (TypeError, ValueError):
+                return default
+
+        def as_float(key: str, default: float) -> float:
+            try:
+                return float(extra.get(key, default))
+            except (TypeError, ValueError):
+                return default
+
+        return cls(
+            # `max_retries` counts retries *after* the first attempt, which is
+            # how people normally read the word.
+            max_attempts=max(1, as_int("max_retries", 2) + 1),
+            base_delay=max(0.0, as_float("retry_base_delay", 0.5)),
+            max_delay=max(0.0, as_float("retry_max_delay", 8.0)),
+        )
+
+    def delay_for(self, attempt: int) -> float:
+        """Exponential backoff: base, 2x, 4x ... capped at ``max_delay``."""
+        attempt = max(1, attempt)
+        return min(self.max_delay, self.base_delay * (2 ** (attempt - 1)))
 
 
 # --------------------------------------------------------------------------
@@ -65,7 +110,7 @@ class ToolCall:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ToolCall":
+    def from_dict(cls, data: Dict[str, Any]) -> ToolCall:
         return cls(
             id=data.get("id", ""),
             name=data.get("name", ""),
@@ -104,7 +149,7 @@ class Message:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Message":
+    def from_dict(cls, data: Dict[str, Any]) -> Message:
         return cls(
             role=data.get("role", "user"),
             content=data.get("content", "") or "",
@@ -197,6 +242,10 @@ class BaseProvider(ABC):
     """Common behaviour for every LLM backend."""
 
     supports_streaming: bool = False
+    #: Whether a usable API key is required before making requests.
+    requires_api_key: bool = True
+    #: Environment variable consulted when the config does not name one.
+    default_key_env: str = ""
 
     def __init__(
         self,
@@ -206,14 +255,19 @@ class BaseProvider(ABC):
         api_key: str = "",
         timeout: float = 120.0,
         extra: Optional[Dict[str, Any]] = None,
+        api_key_env: str = "",
     ) -> None:
         self.name = name
         self.base_url = (base_url or "").rstrip("/")
         self.model = model
         self.api_key = api_key or ""
         self.timeout = timeout
+        self.api_key_env = api_key_env or ""
         self.extra = extra or {}
         self.extra_headers: Dict[str, str] = dict(self.extra.get("headers") or {})
+        self.retry = RetryPolicy.from_extra(self.extra)
+        # Indirected so tests can make backoff instant instead of sleeping.
+        self._sleep: Callable[[float], None] = time.sleep
         self._client: Optional[httpx.Client] = None
 
     # -- http --------------------------------------------------------------
@@ -221,8 +275,11 @@ class BaseProvider(ABC):
     @property
     def client(self) -> httpx.Client:
         if self._client is None:
+            # An explicit Timeout separates "the server never answered"
+            # (connect) from "the model is still thinking" (read). The read
+            # budget stays generous because a long completion is legitimate.
             self._client = httpx.Client(
-                timeout=self.timeout,
+                timeout=httpx.Timeout(self.timeout, connect=min(10.0, self.timeout)),
                 verify=ssl_verify(),
                 follow_redirects=True,
             )
@@ -233,11 +290,140 @@ class BaseProvider(ABC):
             self._client.close()
             self._client = None
 
-    def __enter__(self) -> "BaseProvider":
+    def __enter__(self) -> BaseProvider:
         return self
 
     def __exit__(self, *exc_info: Any) -> None:
         self.close()
+
+    # -- credentials -------------------------------------------------------
+
+    @property
+    def key_env_var(self) -> str:
+        """Name of the environment variable that should hold the API key."""
+        return self.api_key_env or self.default_key_env
+
+    def check_credentials(self) -> None:
+        """Fail early and actionably when the API key is missing.
+
+        A blank key otherwise surfaces as a puzzling 401 several seconds later;
+        catching it here lets us name the variable the user must export.
+        """
+        if not self.requires_api_key or self.api_key:
+            return
+        env = self.key_env_var or "the provider's API key variable"
+        raise ProviderError(
+            f"{self.name}: no API key configured. Export {env} "
+            f"(e.g. `export {env}=...`) or set providers.{self.name}.api_key_env "
+            "in ~/.ackstreet/config.toml. For a fully local model, switch to the "
+            "ollama provider, which needs no key."
+        )
+
+    # -- retry -------------------------------------------------------------
+
+    def _backoff(self, attempt: int, reason: str) -> float:
+        """Sleep before the next attempt; returns the delay used."""
+        _ = reason  # kept for readable call sites and future logging
+        delay = self.retry.delay_for(attempt)
+        if delay > 0:
+            self._sleep(delay)
+        return delay
+
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_body: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: Optional[float] = None,
+    ) -> httpx.Response:
+        """Send a request, retrying transient failures with exponential backoff.
+
+        Retried: HTTP 408/409/425/429/5xx and read timeouts.
+        Not retried: connection errors (a wrong ``base_url`` never fixes
+        itself) and other 4xx (a bad key or model never fixes itself either).
+        """
+        attempts = max(1, int(self.retry.max_attempts))
+        budget = timeout or self.timeout
+
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self.client.request(
+                    method,
+                    url,
+                    json=json_body,
+                    headers=headers,
+                    timeout=budget,
+                )
+            except httpx.TimeoutException as exc:
+                if attempt < attempts:
+                    self._backoff(attempt, "timeout")
+                    continue
+                raise ProviderError(
+                    f"{self.name}: request to {url} timed out after {budget}s "
+                    f"(gave up after {attempts} attempt(s))"
+                ) from exc
+            except httpx.ConnectError as exc:
+                raise ProviderError(
+                    f"{self.name}: cannot connect to {url}. "
+                    "Is the server running and is base_url correct?"
+                ) from exc
+
+            if response.status_code in self.retry.retry_statuses and attempt < attempts:
+                self._backoff(attempt, f"HTTP {response.status_code}")
+                continue
+
+            self._raise_for_status(response)
+            return response
+
+        # Unreachable: every path above returns or raises.
+        raise ProviderError(f"{self.name}: request to {url} failed")
+
+    def _open_stream(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        headers: Dict[str, str],
+    ) -> httpx.Response:
+        """Open a streaming response, retrying only before any data is read.
+
+        Retrying mid-stream would duplicate output the caller has already seen,
+        so failures after the first byte surface as errors instead.
+        """
+        attempts = max(1, int(self.retry.max_attempts))
+
+        for attempt in range(1, attempts + 1):
+            try:
+                request = self.client.build_request(
+                    "POST", url, json=payload, headers=headers
+                )
+                response = self.client.send(request, stream=True)
+            except httpx.TimeoutException as exc:
+                if attempt < attempts:
+                    self._backoff(attempt, "stream timeout")
+                    continue
+                raise ProviderError(
+                    f"{self.name}: streaming request to {url} timed out "
+                    f"(gave up after {attempts} attempt(s))"
+                ) from exc
+            except httpx.ConnectError as exc:
+                raise ProviderError(
+                    f"{self.name}: cannot connect to {url}. "
+                    "Is the server running and is base_url correct?"
+                ) from exc
+
+            if response.status_code in self.retry.retry_statuses and attempt < attempts:
+                response.close()
+                self._backoff(attempt, f"HTTP {response.status_code}")
+                continue
+
+            if response.status_code >= 400:
+                response.read()
+                self._raise_for_status(response)
+            return response
+
+        raise ProviderError(f"{self.name}: could not open a stream to {url}")
 
     # -- helpers -----------------------------------------------------------
 
@@ -249,31 +435,49 @@ class BaseProvider(ABC):
             body = response.text[:800]
         except Exception:  # pragma: no cover - defensive
             body = "<unreadable body>"
-        hint = ""
-        if response.status_code in (401, 403):
+        try:
+            url: Any = response.request.url
+        except Exception:  # pragma: no cover - defensive
+            url = "<unknown url>"
+
+        status = response.status_code
+        retries = max(0, self.retry.max_attempts - 1)
+
+        if status in (401, 403):
+            env = self.key_env_var or "the provider's API key variable"
             hint = (
-                " — check that the API key environment variable is set and valid "
-                f"(provider '{self.name}')."
+                " — the API key is missing, invalid or not permitted. "
+                f"Check that {env} is set to a valid key for this endpoint."
             )
-        elif response.status_code == 404:
+        elif status == 404:
             hint = " — check base_url and model name."
+        elif status == 429:
+            hint = (
+                " — rate limited or out of quota. The request was retried "
+                f"{retries} time(s) before giving up; slow down or raise "
+                f"providers.{self.name}.max_retries."
+            )
+        elif 500 <= status < 600:
+            hint = (
+                f" — the provider had a server error. Retried {retries} "
+                "time(s) before giving up."
+            )
+        elif status == 400:
+            hint = (
+                " — the request was rejected; usually an unknown model name "
+                "or an unsupported parameter."
+            )
+        else:
+            hint = ""
         raise ProviderError(
-            f"{self.name}: HTTP {response.status_code} from {response.request.url}{hint}",
-            status_code=response.status_code,
+            f"{self.name}: HTTP {status} from {url}{hint}",
+            status_code=status,
             body=body,
         )
 
-    def _post(self, url: str, payload: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
-        try:
-            response = self.client.post(url, json=payload, headers=headers)
-        except httpx.ConnectError as exc:
-            raise ProviderError(
-                f"{self.name}: cannot connect to {url}. "
-                "Is the server running and is base_url correct?"
-            ) from exc
-        except httpx.TimeoutException as exc:
-            raise ProviderError(f"{self.name}: request to {url} timed out after {self.timeout}s") from exc
-        self._raise_for_status(response)
+    def _post(self, url: str, payload: Dict[str, Any], headers: Dict[str, str]) -> Any:
+        """POST JSON and decode the response, with retries and clear errors."""
+        response = self._request("POST", url, json_body=payload, headers=headers)
         try:
             return response.json()
         except ValueError as exc:
@@ -307,9 +511,11 @@ class BaseProvider(ABC):
 
 
 __all__ = [
+    "RETRYABLE_STATUS",
     "BaseProvider",
     "Message",
     "ProviderResponse",
+    "RetryPolicy",
     "StreamCallback",
     "ToolCall",
     "parse_tool_arguments",

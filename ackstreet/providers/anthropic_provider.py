@@ -12,7 +12,8 @@ Anthropic's wire format differs from OpenAI's in three ways that matter here:
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -33,6 +34,8 @@ class AnthropicProvider(BaseProvider):
     """Client for ``POST /v1/messages``."""
 
     supports_streaming = False  # this adapter issues one non-streaming request
+    requires_api_key = True
+    default_key_env = "ANTHROPIC_API_KEY"
 
     def _headers(self) -> Dict[str, str]:
         headers = {
@@ -141,25 +144,68 @@ class AnthropicProvider(BaseProvider):
             payload["tools"] = converted_tools
 
         url = f"{self.base_url}/v1/messages" if not self.base_url.endswith("/v1") else f"{self.base_url}/messages"
+        self.check_credentials()
         data = self._post(url, payload, self._headers())
+
+        if not isinstance(data, dict):
+            raise ProviderError(
+                f"{self.name}: expected a JSON object from {url}, got {type(data).__name__}",
+                body=str(data)[:400],
+            )
+
+        # Anthropic reports failures in the body for some error classes.
+        error = data.get("error")
+        if error:
+            if isinstance(error, dict):
+                error = error.get("message") or json.dumps(error)
+            raise ProviderError(f"{self.name}: the API returned an error: {str(error)[:400]}")
+
+        content = data.get("content")
+        if content is None:
+            raise ProviderError(
+                f"{self.name}: response from {url} had no 'content' field",
+                body=json.dumps(data)[:400],
+            )
+        if not isinstance(content, list):
+            raise ProviderError(
+                f"{self.name}: 'content' was {type(content).__name__}, expected a list",
+                body=json.dumps(data)[:400],
+            )
 
         text_parts: List[str] = []
         calls: List[ToolCall] = []
-        for block in data.get("content") or []:
+        for block in content:
+            if not isinstance(block, dict):
+                continue
             block_type = block.get("type")
             if block_type == "text":
                 text_parts.append(block.get("text", ""))
             elif block_type == "tool_use":
+                name = block.get("name") or ""
+                if not name:
+                    # An unnamed tool_use block cannot be dispatched.
+                    continue
                 calls.append(
                     ToolCall(
                         id=block.get("id", ""),
-                        name=block.get("name", ""),
+                        name=name,
                         arguments=parse_tool_arguments(block.get("input")),
                         raw_arguments=json.dumps(block.get("input") or {}),
                     )
                 )
 
         text = "".join(text_parts)
+        stop_reason = data.get("stop_reason", "") or ""
+
+        # A response that stopped for a tool but supplied no usable call would
+        # otherwise be read as a finished, empty answer.
+        if stop_reason == "tool_use" and not calls:
+            raise ProviderError(
+                f"{self.name}: stop_reason was 'tool_use' but no usable tool_use "
+                "block was present",
+                body=json.dumps(data)[:400],
+            )
+
         if stream_callback is not None and text:
             # Anthropic streaming is not implemented in this adapter; emit once
             # so callers still see progress.
@@ -168,7 +214,7 @@ class AnthropicProvider(BaseProvider):
         return ProviderResponse(
             text=text,
             tool_calls=calls,
-            finish_reason=data.get("stop_reason", "") or "",
+            finish_reason=stop_reason,
             usage=data.get("usage") or {},
             raw=data,
         )
