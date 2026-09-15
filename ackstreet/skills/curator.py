@@ -16,11 +16,11 @@ Two safeguards keep this from turning into noise:
 from __future__ import annotations
 
 import json
-import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
-from ..providers.base import BaseProvider, Message, parse_tool_arguments
+from ..providers.base import BaseProvider, Message
 from .registry import Skill, SkillRegistry, slugify
 
 CURATOR_SYSTEM = """\

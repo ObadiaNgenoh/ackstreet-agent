@@ -14,9 +14,10 @@ from __future__ import annotations
 import datetime as _dt
 import re
 import shutil
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..errors import SkillError
 
