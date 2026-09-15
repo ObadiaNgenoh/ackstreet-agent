@@ -17,11 +17,10 @@ import html
 import os
 import re
 from typing import Any, Dict, List
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import quote_plus, urlparse
 
 import httpx
 
-from ..config import Config
 from ..providers.base import ssl_verify
 from .base import Tool, ToolResult
 

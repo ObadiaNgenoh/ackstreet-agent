@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 import re
 import shutil
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, List
 
-from ..config import Config
 from .base import Tool, ToolResult
 
 
@@ -300,7 +300,7 @@ class SearchFilesTool(Tool):
                 continue
             files_scanned += 1
             try:
-                with open(candidate, "r", encoding="utf-8", errors="ignore") as handle:
+                with open(candidate, encoding="utf-8", errors="ignore") as handle:
                     for line_number, line in enumerate(handle, start=1):
                         if regex.search(line):
                             try:
