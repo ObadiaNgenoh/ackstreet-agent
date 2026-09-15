@@ -54,7 +54,7 @@ class Session:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Session":
+    def from_dict(cls, data: Dict[str, Any]) -> Session:
         return cls(
             id=data.get("id", ""),
             task=data.get("task", ""),

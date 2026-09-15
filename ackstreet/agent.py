@@ -19,17 +19,19 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional
 
 from .config import Config
 from .errors import ConfigError, ProviderError
-from .memory import MemoryStore, Session
-from .providers.base import BaseProvider, Message, ProviderResponse, ToolCall
+from .memory import MemoryStore
 from .providers import provider_from_config
+from .providers.base import BaseProvider, Message, ProviderResponse
+from .safety import ApprovalPolicy, Approver
 from .skills.curator import SkillCurator
 from .skills.registry import SkillRegistry
-from .tools import ToolRegistry, build_default_registry
+from .tools import ToolRegistry, ToolResult, build_default_registry
 
 EventCallback = Callable[["AgentEvent"], None]
 
@@ -73,9 +75,14 @@ class Agent:
         skills: Optional[SkillRegistry] = None,
         memory: Optional[MemoryStore] = None,
         on_event: Optional[EventCallback] = None,
+        approver: Optional[Approver] = None,
+        approval_mode: Optional[str] = None,
     ) -> None:
         self.config = config
         self.config.ensure_dirs()
+        if approval_mode:
+            config.set("agent", "approval_mode", approval_mode)
+        self.approvals = ApprovalPolicy(config, approver=approver)
 
         self.skills = skills or SkillRegistry(
             config.skills_dir,
@@ -117,6 +124,34 @@ class Agent:
                 self.on_event(AgentEvent(type=event_type, data=data))
             except Exception:  # noqa: BLE001 - a UI callback must not break the run
                 pass
+
+    # -- approval gate -----------------------------------------------------
+
+    def _execute_with_approval(self, name: str, arguments: Dict[str, Any]) -> ToolResult:
+        """Run a tool call, consulting the approval gate for dangerous tools.
+
+        A refusal comes back as a failed :class:`ToolResult`, so the model sees
+        it as an ordinary error it can adapt to rather than a crash.
+        """
+        tool = self.tools.get(name)
+        dangerous = tool is not None and bool(getattr(tool, "dangerous", False))
+        decision = self.approvals.review(name, arguments, dangerous=dangerous)
+
+        self.emit(
+            "approval",
+            tool=name,
+            approved=decision.approved,
+            source=decision.source,
+            reason=decision.reason,
+            target=decision.target,
+        )
+        if not decision.approved:
+            return ToolResult.failure(
+                decision.reason,
+                approval="denied",
+                approval_source=decision.source,
+            )
+        return self.tools.execute(name, arguments)
 
     # -- prompting ---------------------------------------------------------
 
@@ -328,8 +363,8 @@ class Agent:
                     stalled = True
                     break
 
-                result_obj = self.tools.execute(call.name, call.arguments)
-                rendered = result_obj.render(self.tools.get(call.name).output_limit if tool else 20000)
+                result_obj = self._execute_with_approval(call.name, call.arguments)
+                rendered = result_obj.render(tool.output_limit if tool else 20000)
 
                 self.messages.append(
                     Message(
@@ -430,8 +465,8 @@ class Agent:
 
             stream_callback = None
             if stream:
-                def stream_callback(chunk: str) -> None:  # type: ignore[misc]
-                    self.emit("text", chunk=chunk, step=step_index)
+                def stream_callback(chunk: str, _step: int = step_index) -> None:  # type: ignore[misc]
+                    self.emit("text", chunk=chunk, step=_step)
 
             self.emit("thinking", step=step_index, total=budget)
 
@@ -476,7 +511,7 @@ class Agent:
                     )
                     continue
 
-                outcome = self.tools.execute(call.name, call.arguments)
+                outcome = self._execute_with_approval(call.name, call.arguments)
                 tool = self.tools.get(call.name)
                 self.messages.append(
                     Message(
