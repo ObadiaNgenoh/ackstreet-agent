@@ -22,11 +22,17 @@ from typing import Any, List, Optional
 
 from . import __version__
 from .agent import Agent, AgentEvent
-from .config import Config, config_path, home_dir
+from .config import Config
+from .connectors.commands import (
+    cmd_connect,
+    cmd_connectors,
+    cmd_serve,
+    connector_status_lines,
+)
 from .errors import AckstreetError, ConfigError, ProviderError
 from .memory import MemoryStore
 from .providers import provider_from_config
-from .providers.base import ssl_verify
+from .safety import ApprovalRequest
 from .skills.curator import CurationOutcome, SkillCurator
 from .skills.registry import SkillRegistry
 from .tools import build_default_registry
@@ -95,10 +101,60 @@ def load(args: argparse.Namespace) -> Config:
         cfg.set("agent", "provider", args.provider)
     if getattr(args, "model", None):
         cfg.set("agent", "model", args.model)
+    if getattr(args, "approval_mode", None):
+        cfg.set("agent", "approval_mode", args.approval_mode)
     return cfg
 
 
-def build_agent(cfg: Config, quiet: bool = False, stream: bool = True) -> Agent:
+class InteractiveApprover:
+    """Ask a human whether a dangerous tool call may run (chat mode).
+
+    ``always`` remembers a tool for the rest of the session, so approving
+    ``shell`` once does not mean answering the same question twenty times.
+    """
+
+    def __init__(self) -> None:
+        self.always: set[str] = set()
+
+    def __call__(self, request: ApprovalRequest) -> bool:
+        if request.tool in self.always:
+            return True
+
+        print()
+        print(f"  {yellow('!')} {bold('approval required')} {dim(f'(mode={request.mode})')}")
+        shown = request.target.strip().replace("\n", " ")
+        if len(shown) > 300:
+            shown = shown[:297] + "..."
+        print(f"    {bold(request.tool)}  {shown}")
+        if request.reason:
+            print(dim(f"    reason: {request.reason}"))
+
+        prompt = (
+            f"    approve? {bold('[y]')}es / {bold('[n]')}o / "
+            f"{bold('[a]')}lways allow '{request.tool}' for this session > "
+        )
+        while True:
+            try:
+                answer = input(prompt).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return False
+            if answer in ("y", "yes"):
+                return True
+            if answer in ("n", "no"):
+                return False
+            if answer in ("a", "always"):
+                self.always.add(request.tool)
+                return True
+            print(dim("    please answer y, n or a"))
+
+
+def build_agent(
+    cfg: Config,
+    quiet: bool = False,
+    stream: bool = True,
+    approver=None,
+) -> Agent:
     """Create an :class:`Agent` with a live progress printer."""
 
     def render(event: AgentEvent) -> None:
@@ -122,6 +178,12 @@ def build_agent(cfg: Config, quiet: bool = False, stream: bool = True) -> Agent:
             mark = green("ok") if data["ok"] else red("failed")
             summary = (data.get("summary") or "").strip().replace("\n", " ")[:180]
             print(f"     {mark} {dim(summary)}", file=sys.stderr)
+        elif kind == "approval":
+            if not data.get("approved"):
+                reason = (data.get("reason") or "").strip().replace("\n", " ")
+                print(f"     {red('denied')} {dim(reason[:160])}", file=sys.stderr)
+            elif data.get("source") == "user":
+                print(f"     {green('approved')} {dim('by you')}", file=sys.stderr)
         elif kind == "text" and not stream:
             pass
         elif kind == "skill":
@@ -129,13 +191,13 @@ def build_agent(cfg: Config, quiet: bool = False, stream: bool = True) -> Agent:
             if action in ("created", "updated"):
                 verb = "Learned new skill" if action == "created" else "Refined skill"
                 print(
-                    f"\n  {yellow('*')} {verb}: {bold(data['name'])} � {data.get('description', '')}",
+                    f"\n  {yellow('*')} {verb}: {bold(data['name'])} — {data.get('description', '')}",
                     file=sys.stderr,
                 )
         elif kind == "error":
             print(red(f"\n  ! {data.get('message', 'error')}"), file=sys.stderr)
 
-    return Agent(cfg, on_event=render)
+    return Agent(cfg, on_event=render, approver=approver)
 
 
 # --------------------------------------------------------------------------
@@ -235,12 +297,53 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     registry = build_default_registry(cfg, SkillRegistry(cfg.skills_dir))
     print(f"   {len(registry.names())} tool(s): {', '.join(registry.names())}")
 
+    print(bold("\n5. Approval gate"))
+    policy = cfg.approval_policy()
+    dangerous = [
+        tool.name for tool in registry.tools() if getattr(tool, "dangerous", False)
+    ]
+    print(f"   mode:      {policy.describe()}")
+    print(f"   guarding:  {', '.join(dangerous) or '(none)'}")
+    if policy.allowlist:
+        print(f"   allowlist: {', '.join(policy.allowlist)}")
+    if policy.denylist:
+        print(f"   denylist:  {', '.join(policy.denylist)}")
+    if policy.mode == "auto":
+        print(
+            yellow(
+                "   [warn] dangerous tools run unattended. Use --approval-mode ask "
+                "or an allowlist for untrusted input."
+            )
+        )
+
     print(bold("\n6. Skills and memory"))
     skills = SkillRegistry(cfg.skills_dir, seeds_dir=_seeds_dir()).list()
     store = MemoryStore(cfg.memory_dir)
     stats = store.stats()
     print(f"   skills:   {len(skills)} ({', '.join(s.name for s in skills) or 'none'})")
     print(f"   sessions: {stats['sessions']}, facts: {stats['facts']}")
+
+    print(bold("\n7. Chat connectors"))
+    try:
+        rows = connector_status_lines(cfg)
+    except Exception as exc:  # noqa: BLE001 - doctor must never crash
+        rows = []
+        print(f"   [{yellow('warn')}] could not inspect connectors: {exc}")
+    if not rows:
+        print("   (no connectors registered)")
+    for row in rows:
+        mark = green("ok  ") if row["configured"] else yellow("setup")
+        scope = ", ".join(row["allowlist"]) if row["allowlist"] else red("EMPTY (open)")
+        print(f"   [{mark}] {row['name']}: allowlist {scope}")
+        if not row["configured"]:
+            print(dim(f"           ackstreet connect {row['name']}"))
+    if any(not row["allowlist"] for row in rows):
+        print(
+            yellow(
+                "   [warn] an empty allowlist means anyone who can reach the bot may "
+                "drive this agent. Set connectors.<name>.allowed_user_ids."
+            )
+        )
 
     print()
     if ok:
@@ -274,9 +377,23 @@ def _render_result(result, show_steps: bool = False) -> None:
     )
 
 
+def _apply_approval_flags(args: argparse.Namespace, cfg: Config) -> None:
+    """Honour ``--yes`` / ``--no-approval`` before the agent is built.
+
+    Both flags mean the same thing: grant approval for dangerous tools without
+    prompting. ``--yes`` is the canonical spelling (it answers the prompt),
+    ``--no-approval`` is the explicit alias for skipping the gate.
+    """
+    if getattr(args, "yes", False) or getattr(args, "no_approval", False):
+        cfg.set("agent", "approval_mode", "auto")
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     cfg = load(args)
     cfg.ensure_dirs()
+    _apply_approval_flags(args, cfg)
+    # `run` is non-interactive: no approver, so ask/allowlist mode refuses
+    # dangerous calls instead of blocking on a prompt nobody can answer.
     agent = build_agent(cfg, quiet=args.quiet, stream=False)
     task = " ".join(args.task).strip()
     if not task:
@@ -323,11 +440,14 @@ def cmd_plan(args: argparse.Namespace) -> int:
 def cmd_chat(args: argparse.Namespace) -> int:
     cfg = load(args)
     cfg.ensure_dirs()
-    agent = build_agent(cfg, quiet=args.quiet, stream=True)
+    _apply_approval_flags(args, cfg)
+    approver = None if args.yes else InteractiveApprover()
+    agent = build_agent(cfg, quiet=args.quiet, stream=True, approver=approver)
 
     print_banner()
     spec = cfg.resolve_provider()
     print(f"provider {bold(spec.name)}  model {bold(spec.model or '(unset)')}")
+    print(f"approvals {bold(agent.approvals.describe())}")
     print(dim("Commands: /help /tools /skills /memory /clear /exit\n"))
 
     while True:
@@ -343,11 +463,12 @@ def cmd_chat(args: argparse.Namespace) -> int:
             break
         if user_input == "/help":
             print(
-                "  /tools   list available tools\n"
-                "  /skills  list saved skills\n"
-                "  /memory  show memory stats\n"
-                "  /clear   reset the conversation (skills persist)\n"
-                "  /exit    leave the session"
+                "  /tools    list available tools\n"
+                "  /skills   list saved skills\n"
+                "  /approvals  show the approval gate state\n"
+                "  /memory   show memory stats\n"
+                "  /clear    reset the conversation (skills persist)\n"
+                "  /exit     leave the session"
             )
             continue
         if user_input == "/tools":
@@ -358,6 +479,11 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 print(f"  - {skill.name}: {skill.description}")
             if not agent.skills.list():
                 print("  (no skills saved yet)")
+            continue
+        if user_input == "/approvals":
+            print(f"  mode: {agent.approvals.describe()}")
+            if isinstance(approver, InteractiveApprover) and approver.always:
+                print(f"  always allowed this session: {', '.join(sorted(approver.always))}")
             continue
         if user_input == "/memory":
             print(f"  {agent.memory.stats()}")
@@ -393,9 +519,16 @@ def cmd_chat(args: argparse.Namespace) -> int:
 def cmd_tools(args: argparse.Namespace) -> int:
     cfg = load(args)
     registry = build_default_registry(cfg, SkillRegistry(cfg.skills_dir))
-    print(bold(f"{len(registry.names())} tool(s) available\n"))
+    policy = cfg.approval_policy()
+    print(bold(f"{len(registry.names())} tool(s) available"))
+    print(dim(f"approval mode: {policy.describe()}\n"))
     for tool in registry.tools():
-        flag = red(" [dangerous]") if getattr(tool, "dangerous", False) else ""
+        if getattr(tool, "dangerous", False):
+            needs, why = policy.requires_approval(tool.name, {})
+            state = "needs approval" if needs else "auto-approved"
+            flag = red(f" [dangerous \u2014 {state}]")
+        else:
+            flag = ""
         print(f"  {bold(tool.name)}{flag}")
         print(f"      {tool.description}")
         params = tool.parameters.get("properties", {})
@@ -557,6 +690,37 @@ def cmd_memory(args: argparse.Namespace) -> int:
     return 2
 
 
+def _parse_config_value(raw: str) -> Any:
+    """Interpret a ``config set`` value as TOML-ish rather than always a string.
+
+    Without this, ``config set agent.approval_allowlist '["ls"]'`` would store
+    the literal text and the gate would then match against individual
+    characters. JSON is tried first so lists and objects round-trip.
+    """
+    text = raw.strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered in ("true", "false"):
+        return lowered == "true"
+    if lowered in ("null", "none"):
+        return ""
+    if text[0] in "[{":
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    return raw
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     cfg = load(args)
 
@@ -581,15 +745,7 @@ def cmd_config(args: argparse.Namespace) -> int:
             print(red("key must be in the form section.key"), file=sys.stderr)
             return 2
         section, key = args.key.split(".", 1)
-        value: Any = args.value
-        lowered = str(value).lower()
-        if lowered in ("true", "false"):
-            value = lowered == "true"
-        else:
-            try:
-                value = int(value)
-            except ValueError:
-                pass
+        value: Any = _parse_config_value(args.value)
         cfg.set(section, key, value)
         cfg.save()
         print(green(f"Set {section}.{key} = {value!r} in {cfg.path}"))
@@ -613,6 +769,25 @@ def _add_global_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--home", help="Override the ACKSTREET home directory")
     parser.add_argument("--provider", help="Override the active provider")
     parser.add_argument("--model", help="Override the model name")
+    parser.add_argument(
+        "--approval-mode",
+        choices=["auto", "ask", "allowlist"],
+        help="Override agent.approval_mode for this run",
+    )
+
+
+def _add_approval_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Approve dangerous tools without prompting (sets approval_mode=auto)",
+    )
+    parser.add_argument(
+        "--no-approval",
+        action="store_true",
+        help="Alias for --yes: skip the approval gate entirely",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -647,6 +822,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--quiet", action="store_true", help="Hide progress output")
     p_run.add_argument("--verbose", action="store_true", help="Show every tool call")
     p_run.add_argument("--json", action="store_true", help="Also print a machine-readable result")
+    _add_approval_flags(p_run)
     p_run.set_defaults(func=cmd_run)
 
     p_plan = sub.add_parser("plan", help="Show the plan the agent would follow")
@@ -657,6 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_chat.add_argument("--plan", action="store_true", help="Plan before each task")
     p_chat.add_argument("--quiet", action="store_true", help="Hide progress output")
     p_chat.add_argument("--no-stream", action="store_true", help="Disable token streaming")
+    _add_approval_flags(p_chat)
     p_chat.set_defaults(func=cmd_chat)
 
     p_tools = sub.add_parser("tools", help="List available tools and their arguments")
@@ -734,6 +911,60 @@ def build_parser() -> argparse.ArgumentParser:
     c_set.add_argument("value")
 
     p_config.set_defaults(func=cmd_config, config_action="show")
+
+    # -- connectors --------------------------------------------------------
+    p_connectors = sub.add_parser(
+        "connectors", help="List chat-platform connectors and their state"
+    )
+    p_connectors.set_defaults(func=cmd_connectors)
+
+    p_connect = sub.add_parser(
+        "connect", help="Connect a chat platform (telegram, whatsapp)"
+    )
+    p_connect.add_argument(
+        "platform",
+        nargs="?",
+        help="Platform to configure. Omit to list them.",
+    )
+    p_connect.add_argument(
+        "--token",
+        help="Telegram bot token from @BotFather",
+    )
+    p_connect.add_argument(
+        "--session-path",
+        dest="session_path",
+        help="Where to persist the WhatsApp session (default: <home>/whatsapp/session.db)",
+    )
+    p_connect.add_argument(
+        "--allow-user",
+        dest="allow_user",
+        action="append",
+        default=[],
+        help="Add a user id to this connector's allowlist (repeatable)",
+    )
+    p_connect.add_argument(
+        "--no-verify",
+        dest="no_verify",
+        action="store_true",
+        help="Store the Telegram token without calling getMe to check it",
+    )
+    p_connect.add_argument(
+        "--timeout",
+        type=float,
+        default=120.0,
+        help="Seconds to wait for the WhatsApp QR scan",
+    )
+    p_connect.set_defaults(func=cmd_connect)
+
+    p_serve = sub.add_parser(
+        "serve", help="Run a connector's listener and answer messages with the agent"
+    )
+    p_serve.add_argument("platform", help="Connector to run (telegram, whatsapp)")
+    p_serve.add_argument(
+        "--quiet", action="store_true", help="Hide connector-level logging"
+    )
+    _add_approval_flags(p_serve)
+    p_serve.set_defaults(func=cmd_serve)
 
     return parser
 
