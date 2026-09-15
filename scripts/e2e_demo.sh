@@ -15,22 +15,47 @@
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV_PY="$REPO_DIR/.venv/bin/python"
-ACKSTREET="$REPO_DIR/.venv/bin/ackstreet"
 E2E_HOME="${E2E_HOME:-/tmp/ackstreet-e2e}"
 PORT="${MOCK_PORT:-8099}"
 
-if [ ! -x "$VENV_PY" ]; then
-  echo "error: no virtualenv at $REPO_DIR/.venv — run 'make install' first" >&2
+# Find a Python and an ackstreet entry point. Works both for a local checkout
+# with .venv and for CI, where the package is installed into the runner's
+# system interpreter instead.
+if [ -n "${VENV_PY:-}" ] && [ -x "$VENV_PY" ]; then
+  PY="$VENV_PY"
+elif [ -x "$REPO_DIR/.venv/bin/python" ]; then
+  PY="$REPO_DIR/.venv/bin/python"
+else
+  PY="$(command -v python3 || command -v python || true)"
+fi
+
+if [ -z "$PY" ]; then
+  echo "error: no python interpreter found" >&2
   exit 1
 fi
+
+if [ -n "${ACKSTREET:-}" ] && [ -x "$ACKSTREET" ]; then
+  :
+elif [ -x "$REPO_DIR/.venv/bin/ackstreet" ]; then
+  ACKSTREET="$REPO_DIR/.venv/bin/ackstreet"
+else
+  ACKSTREET="$(command -v ackstreet || true)"
+fi
+
+if [ -z "$ACKSTREET" ]; then
+  echo "error: the 'ackstreet' command is not on PATH — run 'pip install -e .' first" >&2
+  exit 1
+fi
+
+echo "==> Using python:     $PY"
+echo "==> Using ackstreet:  $ACKSTREET"
 
 echo "==> Cleaning previous run"
 rm -rf "$E2E_HOME"
 mkdir -p "$E2E_HOME"
 
 echo "==> Starting mock OpenAI-compatible server on port $PORT"
-"$VENV_PY" "$REPO_DIR/scripts/mock_openai_server.py" --port "$PORT" >"$E2E_HOME/mock.log" 2>&1 &
+"$PY" "$REPO_DIR/scripts/mock_openai_server.py" --port "$PORT" >"$E2E_HOME/mock.log" 2>&1 &
 MOCK_PID=$!
 cleanup() { kill "$MOCK_PID" 2>/dev/null; wait "$MOCK_PID" 2>/dev/null; }
 trap cleanup EXIT

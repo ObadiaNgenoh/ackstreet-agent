@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "ACKSTREET AGENT contributors" }]
-keywords = ["ai", "agent", "llm", "assistant", "automation", "self-hosted", "skills", "telegram", "whatsapp", "chatbot"]
+keywords = ["ai", "agent", "llm", "assistant", "automation", "self-hosted", "skills"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",

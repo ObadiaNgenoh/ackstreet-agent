@@ -320,7 +320,7 @@ class OpenAICompatibleProvider(BaseProvider):
             return False, f"timed out reaching {url}"
         if response.status_code == 401:
             env = self.key_env_var or "the API key variable"
-            return False, f"HTTP 401 from {url} — {env} is missing or invalid"
+            return False, f"HTTP 401 from {url} \u2014 {env} is missing or invalid"
         if response.status_code == 404:
             # Many compatible servers omit /models but still chat fine.
             return True, f"{url} returned 404 but endpoint may still serve chat"
