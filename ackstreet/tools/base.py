@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from ..config import Config
 
@@ -25,11 +25,11 @@ class ToolResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def success(cls, output: str, **metadata: Any) -> "ToolResult":
+    def success(cls, output: str, **metadata: Any) -> ToolResult:
         return cls(ok=True, output=output, metadata=metadata)
 
     @classmethod
-    def failure(cls, error: str, **metadata: Any) -> "ToolResult":
+    def failure(cls, error: str, **metadata: Any) -> ToolResult:
         return cls(ok=False, output=f"ERROR: {error}", error=error, metadata=metadata)
 
     def render(self, limit: int = 20000) -> str:

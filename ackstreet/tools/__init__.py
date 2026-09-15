@@ -64,7 +64,7 @@ class ToolRegistry:
 
 
 def build_default_registry(
-    config: Config, skill_registry: "Optional[SkillRegistry]" = None
+    config: Config, skill_registry: Optional[SkillRegistry] = None
 ) -> ToolRegistry:
     """Every tool the agent ships with, honouring config switches.
 

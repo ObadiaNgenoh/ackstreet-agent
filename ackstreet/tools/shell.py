@@ -5,7 +5,6 @@ from __future__ import annotations
 import subprocess
 from typing import Any, List
 
-from ..config import Config
 from .base import Tool, ToolResult
 
 

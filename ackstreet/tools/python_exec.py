@@ -13,7 +13,6 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from ..config import Config
 from .base import Tool, ToolResult
 
 
