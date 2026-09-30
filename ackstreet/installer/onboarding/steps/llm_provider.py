@@ -26,7 +26,7 @@ class LLMProviderStep:
                 "openai",
             ),
             ("Anthropic (Claude 3.5 Sonnet) - $3-15/1M tokens", "anthropic"),
-            ("Local Ollama (Free, on-device, 8GB+ RAM) - llama3.1", "ollama"),
+            ("Local Ollama (Free, on-device, 8GB+ RAM required)", "ollama"),
             ("Other OpenAI-compatible (LM Studio, vLLM, Azure)", "custom"),
         ]
 
@@ -66,26 +66,29 @@ class LLMProviderStep:
         models = [
             ("GPT-4o (Most capable, slower, $15/1M input tokens)", "gpt-4o"),
             ("GPT-4o mini (Fast & cheap, $0.15/1M input tokens)", "gpt-4o-mini"),
-            ("GPT-4 Turbo (Older, $10/1M input tokens)", "gpt-4-turbo"),
+            ("GPT-4 Turbo (Older model, $10/1M input tokens)", "gpt-4-turbo"),
         ]
 
         model = self.ui.menu("Which model?", models)
 
-        config["agent"] = {
-            "provider": "openai",
+        if "agent" not in config:
+            config["agent"] = {}
+        config["agent"]["provider"] = "openai"
+        config["agent"]["model"] = model
+
+        if "providers" not in config:
+            config["providers"] = {}
+        config["providers"]["openai"] = {
+            "type": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "api_key_env": "OPENAI_API_KEY",
             "model": model,
         }
-        config["providers"] = {
-            "openai": {
-                "type": "openai",
-                "api_key_env": "OPENAI_API_KEY",
-                "model": model,
-            }
-        }
 
-        # Store the key
+        # Store the key in .env file
         ConfigWriter.write_env_file(self.env_path, {"OPENAI_API_KEY": api_key})
         self.ui.success(f"OpenAI configured with {model}")
+        self.ui.info("API key stored securely in ~/.ackstreet/.env")
         return True
 
     def _setup_anthropic(self, config: Dict[str, Any]) -> bool:
@@ -107,20 +110,23 @@ class LLMProviderStep:
             validator=lambda x: validate_anthropic_key(x),
         )
 
-        config["agent"] = {
-            "provider": "anthropic",
+        if "agent" not in config:
+            config["agent"] = {}
+        config["agent"]["provider"] = "anthropic"
+        config["agent"]["model"] = "claude-3-5-sonnet-20241022"
+
+        if "providers" not in config:
+            config["providers"] = {}
+        config["providers"]["anthropic"] = {
+            "type": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_key_env": "ANTHROPIC_API_KEY",
             "model": "claude-3-5-sonnet-20241022",
-        }
-        config["providers"] = {
-            "anthropic": {
-                "type": "anthropic",
-                "api_key_env": "ANTHROPIC_API_KEY",
-                "model": "claude-3-5-sonnet-20241022",
-            }
         }
 
         ConfigWriter.write_env_file(self.env_path, {"ANTHROPIC_API_KEY": api_key})
         self.ui.success("Anthropic (Claude) configured")
+        self.ui.info("API key stored securely in ~/.ackstreet/.env")
         return True
 
     def _setup_ollama(self, config: Dict[str, Any]) -> bool:
@@ -160,20 +166,22 @@ class LLMProviderStep:
         if model == "custom":
             model = self.ui.prompt("Model name (e.g., llama2:13b)")
 
-        config["agent"] = {
-            "provider": "ollama",
+        if "agent" not in config:
+            config["agent"] = {}
+        config["agent"]["provider"] = "ollama"
+        config["agent"]["model"] = model
+
+        if "providers" not in config:
+            config["providers"] = {}
+        config["providers"]["ollama"] = {
+            "type": "openai",  # Ollama is OpenAI-compatible
+            "base_url": base_url,
+            "api_key_env": "",
             "model": model,
-        }
-        config["providers"] = {
-            "ollama": {
-                "type": "openai",  # Ollama is OpenAI-compatible
-                "base_url": base_url,
-                "model": model,
-            }
         }
 
         self.ui.success(f"Ollama configured: {model} at {base_url}")
-        self.ui.info("Don't forget to run: ollama serve &")
+        self.ui.warning("Remember to run: ollama serve &")
         return True
 
     def _setup_custom(self, config: Dict[str, Any]) -> bool:
@@ -196,19 +204,21 @@ class LLMProviderStep:
         api_key = self.ui.prompt("API key", is_secret=True)
         model = self.ui.prompt("Model name")
 
-        config["agent"] = {
-            "provider": "custom",
+        if "agent" not in config:
+            config["agent"] = {}
+        config["agent"]["provider"] = "custom"
+        config["agent"]["model"] = model
+
+        if "providers" not in config:
+            config["providers"] = {}
+        config["providers"]["custom"] = {
+            "type": "openai",
+            "base_url": base_url,
+            "api_key_env": "CUSTOM_API_KEY",
             "model": model,
-        }
-        config["providers"] = {
-            "custom": {
-                "type": "openai",
-                "base_url": base_url,
-                "api_key_env": "CUSTOM_API_KEY",
-                "model": model,
-            }
         }
 
         ConfigWriter.write_env_file(self.env_path, {"CUSTOM_API_KEY": api_key})
         self.ui.success(f"Custom provider configured: {base_url}")
+        self.ui.info("API key stored securely in ~/.ackstreet/.env")
         return True
