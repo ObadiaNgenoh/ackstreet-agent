@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ackstreet-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "A self-hosted, self-improving AI agent framework with tools, persistent memory and a skill registry."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -60,6 +60,7 @@ dev = [
 
 [project.scripts]
 ackstreet = "ackstreet.cli:main"
+ackstreet-install = "ackstreet.installer.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/ObadiaNgenoh/ackstreet-agent"
@@ -73,6 +74,10 @@ packages = [
   "ackstreet.tools",
   "ackstreet.skills",
   "ackstreet.connectors",
+  "ackstreet.installer",
+  "ackstreet.installer.ui",
+  "ackstreet.installer.onboarding",
+  "ackstreet.installer.onboarding.steps",
 ]
 
 [tool.setuptools.package-data]
