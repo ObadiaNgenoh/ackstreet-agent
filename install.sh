@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# ACKSTREET AGENT — one-command installer.
+# ACKSTREET AGENT — one-command installer with interactive onboarding.
 #
 #   curl -fsSL https://raw.githubusercontent.com/ObadiaNgenoh/ackstreet-agent/main/install.sh | bash
 #
@@ -8,8 +8,8 @@
 #
 #   ./install.sh
 #
-# Creates a virtualenv, installs the package, writes the config, seeds the
-# starter skills and runs a health check. Supports Linux, macOS, and WSL.
+# Creates a virtualenv, installs the package, and launches interactive setup.
+# Supports Linux, macOS, and WSL.
 #
 set -euo pipefail
 
@@ -107,9 +107,14 @@ ACKSTREET_BIN="$VENV_DIR/bin/ackstreet"
 [ -x "$ACKSTREET_BIN" ] || die "the ackstreet entry point was not created"
 ok "installed: $ACKSTREET_BIN"
 
-# --- 5. initialise config, skills and memory -------------------------------
+INSTALL_BIN="$VENV_DIR/bin/ackstreet-install"
+[ -x "$INSTALL_BIN" ] || INSTALL_BIN="$VENV_DIR/Scripts/ackstreet-install.exe"
+[ -x "$INSTALL_BIN" ] || die "the ackstreet-install entry point was not created"
+ok "installer: $INSTALL_BIN"
+
+# --- 5. initialise config, skills and memory (non-interactive) -----------
 info "Initialising configuration and directory layout"
-"$ACKSTREET_BIN" init
+"$ACKSTREET_BIN" init >/dev/null 2>&1 || true
 
 # --- 6. make `ackstreet` reachable -----------------------------------------
 BIN_DIR="$(dirname "$ACKSTREET_BIN")"
@@ -126,45 +131,80 @@ case ":$PATH:" in
     ;;
 esac
 
-# --- 7. health check -------------------------------------------------------
-info "Running a health check"
+# --- 7. launch interactive onboarding (guided setup) ----------------------
 echo
-set +e
-"$ACKSTREET_BIN" doctor
-DOCTOR_STATUS=$?
-set -e
+info "Starting interactive setup wizard"
+echo
+
+# Detect OS
+detect_os() {
+    if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            if [[ "$ID" == "ubuntu" || "$ID" == "debian" ]]; then
+                echo "ubuntu"
+            elif [[ "$ID" == "fedora" || "$ID" == "rhel" || "$ID" == "rocky" ]]; then
+                echo "rhel"
+            elif [[ "$ID" == "arch" ]]; then
+                echo "arch"
+            else
+                echo "linux_generic"
+            fi
+        else
+            echo "linux_generic"
+        fi
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "darwin"
+    elif [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]]; then
+        echo "windows_wsl"
+    else
+        echo "unknown"
+    fi
+}
+
+OS=$(detect_os)
+
+# Launch interactive onboarding
+"$VENV_PY" -m ackstreet.installer.cli "$OS"
+ONBOARDING_STATUS=$?
 
 echo
-if [ "$DOCTOR_STATUS" -eq 0 ]; then
-  printf '%s\n' "${GREEN}${BOLD}ACKSTREET AGENT is installed and ready.${RESET}"
-else
-  printf '%s\n' "${YELLOW}${BOLD}ACKSTREET AGENT is installed, but the provider check needs attention.${RESET}"
-  printf '%s\n' "That is expected on a fresh machine — no API key is set yet."
-fi
 
-cat <<EOF
+if [ "$ONBOARDING_STATUS" -eq 0 ]; then
+  printf '%s\n' "${GREEN}${BOLD}✓ ACKSTREET AGENT is installed and configured.${RESET}"
+  echo
+  cat <<EOF
 
-${BOLD}Next steps${RESET}
+${BOLD}Quick Start${RESET}
 
-  1. Give it a model. Pick one:
+  1. Start chatting:
+     ackstreet chat
 
-     ${DIM}# OpenAI (or any OpenAI-compatible endpoint)${RESET}
-     export OPENAI_API_KEY=sk-...
-     ackstreet config set agent.provider openai
+  2. Run a single task:
+     ackstreet run "your task here"
 
-     ${DIM}# Anthropic${RESET}
-     export ANTHROPIC_API_KEY=sk-ant-...
-     ackstreet config set agent.provider anthropic
+  3. Check system status:
+     ackstreet doctor
 
-     ${DIM}# Fully local, no key needed${RESET}
-     ollama serve && ollama pull llama3.1
-     ackstreet config set agent.provider ollama
+${BOLD}Documentation${RESET}
+  Config:  ~/.ackstreet/config.toml
+  Skills:  ~/.ackstreet/skills/
+  Memory:  ~/.ackstreet/memory/
+  Logs:    ~/.ackstreet/logs/
 
-  2. Verify:      ackstreet doctor
-  3. Chat:        ackstreet chat
-  4. One-shot:    ackstreet run "list the python files here and write a summary"
+${BOLD}Next: Connect a Messaging Gateway${RESET}
+  ackstreet connect telegram
+  ackstreet serve telegram
 
-Config:  ~/.ackstreet/config.toml
-Skills:  ~/.ackstreet/skills/          ${DIM}(the agent adds to these itself)${RESET}
-Memory:  ~/.ackstreet/memory/
+  or
+
+  ackstreet connect whatsapp
+  ackstreet serve whatsapp
+
 EOF
+  exit 0
+else
+  printf '%s\n' "${YELLOW}${BOLD}Setup was cancelled or encountered an error.${RESET}"
+  printf '%s\n' "You can re-run setup at any time with: ackstreet-install"
+  exit 1
+fi
