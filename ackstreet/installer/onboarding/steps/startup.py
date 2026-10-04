@@ -2,9 +2,9 @@
 
 from typing import Dict, Any
 from pathlib import Path
-import os
 from ackstreet.installer.ui.terminal import Terminal
 from ackstreet.installer.ui.config_writer import ConfigWriter
+from ackstreet.config import load_env_file
 
 
 class StartupStep:
@@ -70,7 +70,7 @@ class StartupStep:
             self.ui.success("Configuration saved")
 
             # Load .env file so API keys are available
-            self._load_env_file()
+            load_env_file(self.env_path)
             self.ui.success("Environment variables loaded")
 
             # Show what was configured
@@ -86,11 +86,17 @@ class StartupStep:
             """
             )
 
-            if config.get("connectors", {}).get("enabled"):
-                if "telegram" in config.get("connectors", {}):
+            connectors = config.get("connectors", {})
+            if connectors.get("enabled"):
+                if "telegram" in connectors:
                     self.ui.print("  - Telegram connector configured")
-                if "whatsapp" in config.get("connectors", {}):
+                if "whatsapp" in connectors:
                     self.ui.print("  - WhatsApp connector configured")
+                empty_allowlist = not connectors.get("allowed_user_ids") and not connectors.get("telegram", {}).get("allowed_user_ids")
+                if empty_allowlist:
+                    self.ui.warning(
+                        "Connector allowlist is empty. Anyone who can message the bot may control this agent."
+                    )
 
             return True
 
@@ -99,23 +105,3 @@ class StartupStep:
             import traceback
             traceback.print_exc()
             return False
-
-    def _load_env_file(self):
-        """Load environment variables from .env file."""
-        if not self.env_path.exists():
-            return
-
-        try:
-            for line in self.env_path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" in line:
-                    key, value = line.split("=", 1)
-                    key = key.strip()
-                    value = value.strip().strip("'\"")
-                    # Only set if not already in environment
-                    if key not in os.environ:
-                        os.environ[key] = value
-        except Exception as e:
-            self.ui.warning(f"Could not load .env file: {e}")

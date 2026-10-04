@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import httpx
 
 from ..config import Config
+from ..installer.ui.config_writer import ConfigWriter
 from .base import (
     Connector,
     ConnectorError,
@@ -163,6 +164,11 @@ class TelegramConnector(Connector):
             value = os.environ.get(var)
             if value:
                 return value.strip()
+        env_var_name = str(self.setting("bot_token_env", "") or "").strip()
+        if env_var_name:
+            value = os.environ.get(env_var_name, "")
+            if value:
+                return value.strip()
         return str(self.setting("bot_token", "") or "").strip()
 
     @classmethod
@@ -177,9 +183,15 @@ class TelegramConnector(Connector):
 
     @classmethod
     def store_credentials(cls, config: Config, token: str = "", **_: Any):
+        import os
+
         settings = dict(cls.settings(config))
         if token:
-            settings["bot_token"] = token.strip()
+            env_var = str(settings.get("bot_token_env") or "ACKSTREET_TELEGRAM_BOT_TOKEN")
+            settings["bot_token"] = ""
+            settings["bot_token_env"] = env_var
+            ConfigWriter.write_env_file(config.root / ".env", {env_var: token.strip()})
+            os.environ[env_var] = token.strip()
         config.set("connectors", cls.name, settings)
         return config.save()
 

@@ -22,7 +22,7 @@ from typing import Any, List, Optional
 
 from . import __version__
 from .agent import Agent, AgentEvent
-from .config import Config
+from .config import Config, load_env_file
 from .connectors.commands import (
     cmd_connect,
     cmd_connectors,
@@ -93,6 +93,7 @@ def load(args: argparse.Namespace) -> Config:
     """Load config, honouring ``--config`` and ``--home``."""
     if getattr(args, "home", None):
         os.environ["ACKSTREET_HOME"] = str(Path(args.home).expanduser())
+    load_env_file()
     target = getattr(args, "config", None)
     cfg = Config.load(Path(target).expanduser() if target else None)
 
@@ -288,8 +289,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             healthy, message = False, f"{type(exc).__name__}: {exc}"
         finally:
             probe.close()
-        mark = green("ok  ") if healthy else yellow("warn")
-        print(f"   [{mark}] {name}: {message}")
+        if healthy:
+            status = "healthy"
+            mark = green("ok  ")
+        else:
+            low = message.lower()
+            if "missing" in low or "no api key" in low or "not set" in low:
+                status = "missing-credentials"
+            elif "timed out" in low or "cannot reach" in low:
+                status = "unreachable"
+            elif "model" in low and ("not found" in low or "not set" in low):
+                status = "invalid-model"
+            else:
+                status = "error"
+            mark = yellow("warn")
+        print(f"   [{mark}] {name} ({status}): {message}")
         if name == spec.name and not healthy:
             ok = False
 
@@ -725,7 +739,8 @@ def cmd_config(args: argparse.Namespace) -> int:
     cfg = load(args)
 
     if args.config_action == "show":
-        print(cfg.to_toml())
+        safe = _redact_config(cfg.data)
+        print(Config(safe, cfg.path).to_toml())
         return 0
 
     if args.config_action == "path":
@@ -746,13 +761,37 @@ def cmd_config(args: argparse.Namespace) -> int:
             return 2
         section, key = args.key.split(".", 1)
         value: Any = _parse_config_value(args.value)
-        cfg.set(section, key, value)
+        try:
+            cfg.set(section, key, value)
+        except KeyError as exc:
+            print(red(f"could not set {args.key}: {exc}"), file=sys.stderr)
+            return 2
         cfg.save()
-        print(green(f"Set {section}.{key} = {value!r} in {cfg.path}"))
+        shown = "***" if _looks_secret_key(key) else value
+        print(green(f"Set {section}.{key} = {shown!r} in {cfg.path}"))
         return 0
 
     print(red("Unknown config subcommand"), file=sys.stderr)
     return 2
+
+
+def _looks_secret_key(key: str) -> bool:
+    text = key.lower()
+    return any(marker in text for marker in ("token", "secret", "password", "api_key"))
+
+
+def _redact_config(data: Any):
+    if isinstance(data, dict):
+        out = {}
+        for k, v in data.items():
+            if _looks_secret_key(str(k)):
+                out[k] = "***" if v else v
+            else:
+                out[k] = _redact_config(v)
+        return out
+    if isinstance(data, list):
+        return [_redact_config(v) for v in data]
+    return data
 
 
 # --------------------------------------------------------------------------

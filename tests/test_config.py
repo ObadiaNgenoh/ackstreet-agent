@@ -52,7 +52,10 @@ def test_roundtrip_toml(tmp_path: Path) -> None:
     path = tmp_path / "roundtrip.toml"
     path.write_text(text, encoding="utf-8")
 
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - py<3.11
+        import tomli as tomllib  # type: ignore
 
     with open(path, "rb") as handle:
         loaded = tomllib.load(handle)
@@ -127,7 +130,10 @@ def test_set_dotted_key_creates_missing_tables(config: Config) -> None:
 
 def test_dump_toml_quoting_preserves_dotted_keys(tmp_path: Path) -> None:
     """A literal dotted key must be quoted so TOML keeps it flat."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - py<3.11
+        import tomli as tomllib  # type: ignore
 
     text = _dump_toml({"providers": {"openai.base_url": "http://x"}})
     parsed = tomllib.loads(text)
