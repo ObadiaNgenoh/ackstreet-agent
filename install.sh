@@ -13,10 +13,54 @@
 #
 set -euo pipefail
 
+trap 'printf "\n%s\n" "${YELLOW:-}Installation cancelled.${RESET:-}"; exit 130' INT TERM
+
 REPO_URL="${ACKSTREET_REPO_URL:-https://github.com/ObadiaNgenoh/ackstreet-agent.git}"
 INSTALL_DIR="${ACKSTREET_INSTALL_DIR:-$HOME/.ackstreet/src}"
 VENV_DIR="${ACKSTREET_VENV_DIR:-$INSTALL_DIR/.venv}"
 MIN_PYTHON="3.9"
+SKIP_ONBOARDING="${ACKSTREET_SKIP_ONBOARDING:-0}"
+NON_INTERACTIVE=0
+ONBOARDING_ARGS=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --skip-onboarding) SKIP_ONBOARDING=1 ;;
+    --non-interactive|--ci) NON_INTERACTIVE=1 ;;
+    --yes|-y) NON_INTERACTIVE=1; ONBOARDING_ARGS+=("--yes") ;;
+    --provider|--model|--api-key-env|--api-key|--gateway|--telegram-token|--telegram-user-id|--skip-doctor)
+      ONBOARDING_ARGS+=("$1")
+      shift
+      [ $# -gt 0 ] || die "Missing value for $1"
+      ONBOARDING_ARGS+=("$1")
+      ;;
+    --help|-h)
+      cat <<'EOF'
+Usage: install.sh [options]
+  --skip-onboarding         Install only
+  --non-interactive|--ci    Run installer wizard without prompts
+  --yes|-y                  Non-interactive with permissive defaults
+  --provider <name>         openrouter|openai|anthropic|ollama|custom
+  --model <name>
+  --api-key-env <VAR>
+  --api-key <secret>
+  --gateway <telegram|whatsapp|none>
+  --telegram-token <token>
+  --telegram-user-id <id>
+  --skip-doctor
+EOF
+      exit 0
+      ;;
+    *) ONBOARDING_ARGS+=("$1") ;;
+  esac
+  shift
+done
+if [ "${CI:-}" = "true" ]; then
+  NON_INTERACTIVE=1
+fi
+if [ "$NON_INTERACTIVE" -eq 1 ]; then
+  ONBOARDING_ARGS+=("--non-interactive")
+fi
 
 # --- output helpers --------------------------------------------------------
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -42,6 +86,17 @@ cat <<'BANNER'
 
 BANNER
 
+# --- distro hint (for dependency errors) -----------------------------------
+PKG_HINT="Install Python and git with your package manager."
+if [ -f /etc/os-release ]; then
+  . /etc/os-release
+  case "${ID:-}" in
+    ubuntu|debian) PKG_HINT="sudo apt-get install -y python3 python3-venv python3-pip git" ;;
+    fedora|rhel|rocky|almalinux|centos) PKG_HINT="sudo dnf install -y python3 python3-pip git" ;;
+    arch) PKG_HINT="sudo pacman -S --needed python git" ;;
+  esac
+fi
+
 # --- 1. locate a suitable Python ------------------------------------------
 info "Looking for Python ${MIN_PYTHON}+"
 PYTHON_BIN=""
@@ -55,11 +110,7 @@ for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3 p
 done
 
 if [ -z "$PYTHON_BIN" ]; then
-  die "Python ${MIN_PYTHON}+ not found. Install it first:
-       Debian/Ubuntu : sudo apt-get install -y python3 python3-venv python3-pip
-       Fedora/RHEL   : sudo dnf install -y python3 python3-pip
-       macOS         : brew install python@3.12
-       Arch          : sudo pacman -S python"
+  die "Python ${MIN_PYTHON}+ not found. ${PKG_HINT}"
 fi
 ok "$($PYTHON_BIN --version) at $PYTHON_BIN"
 
@@ -74,9 +125,7 @@ else
     info "Updating existing checkout at $INSTALL_DIR"
     git -C "$INSTALL_DIR" pull --ff-only || warn "could not update; using the existing checkout"
   else
-    command -v git >/dev/null 2>&1 || die "git is required to clone the repository.
-       Debian/Ubuntu : sudo apt-get install -y git
-       macOS         : brew install git"
+    command -v git >/dev/null 2>&1 || die "git is required to clone the repository. ${PKG_HINT}"
     info "Cloning into $INSTALL_DIR"
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
@@ -132,8 +181,13 @@ case ":$PATH:" in
 esac
 
 # --- 7. launch interactive onboarding (guided setup) ----------------------
+if [ "$SKIP_ONBOARDING" = "1" ]; then
+  warn "Skipping onboarding because ACKSTREET_SKIP_ONBOARDING=1 or --skip-onboarding was set."
+  echo "Run onboarding later: ackstreet-install"
+  exit 0
+fi
 echo
-info "Starting interactive setup wizard"
+info "Starting setup wizard"
 echo
 
 # Detect OS
@@ -164,8 +218,8 @@ detect_os() {
 
 OS=$(detect_os)
 
-# Launch interactive onboarding
-"$VENV_PY" -m ackstreet.installer.cli "$OS"
+# Launch onboarding
+"$VENV_PY" -m ackstreet.installer.cli --os "$OS" "${ONBOARDING_ARGS[@]}"
 ONBOARDING_STATUS=$?
 
 echo
@@ -200,6 +254,10 @@ ${BOLD}Next: Connect a Messaging Gateway${RESET}
 
   ackstreet connect whatsapp
   ackstreet serve whatsapp
+
+${BOLD}Optional background service${RESET}
+  Linux systemd (user): create a unit that runs: ackstreet serve telegram
+  Windows: use install.ps1 and Task Scheduler guidance
 
 EOF
   exit 0

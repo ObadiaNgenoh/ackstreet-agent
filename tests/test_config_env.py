@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from ackstreet.cli import _parse_config_value
-from ackstreet.config import Config
+from ackstreet.config import Config, load_env_file
 
 # -- 1. provider base_url / model environment overrides --------------------
 
@@ -128,3 +128,25 @@ def test_allowlist_survives_a_config_round_trip(
     assert policy.allowlist == ["write_file:*.txt"]
     assert policy.review("write_file", {"path": "notes.txt"}).approved is True
     assert policy.review("write_file", {"path": "notes.md"}).approved is False
+
+
+def test_env_file_is_loaded_without_overriding_existing(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("CUSTOM_API_KEY=from-file\n", encoding="utf-8")
+    monkeypatch.setenv("ACKSTREET_ENV", str(env_file))
+    monkeypatch.setenv("CUSTOM_API_KEY", "from-env")
+
+    loaded = load_env_file()
+    assert loaded["CUSTOM_API_KEY"] == "from-file"
+    assert __import__("os").environ["CUSTOM_API_KEY"] == "from-env"
+
+
+def test_ackstreet_env_override_path(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env_file = tmp_path / "custom.env"
+    env_file.write_text("OPENROUTER_API_KEY=sk-or-test\n", encoding="utf-8")
+    monkeypatch.setenv("ACKSTREET_ENV", str(env_file))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    load_env_file()
+    assert __import__("os").environ["OPENROUTER_API_KEY"] == "sk-or-test"

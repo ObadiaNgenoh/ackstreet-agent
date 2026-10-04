@@ -113,7 +113,7 @@ def cmd_connect(args: argparse.Namespace) -> int:
             return 0
 
         cls.store_credentials(cfg, token=token)
-        print(cli.green(f"Saved the Telegram bot token to {cfg.path}"))
+        print(cli.green(f"Saved the Telegram bot token to {cfg.root / '.env'}"))
 
         if not getattr(args, "no_verify", False):
             connector = cls(cfg)

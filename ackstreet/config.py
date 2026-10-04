@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -42,6 +43,13 @@ def config_path() -> Path:
     if override:
         return Path(override).expanduser()
     return home_dir() / "config.toml"
+
+
+def env_path() -> Path:
+    override = os.environ.get("ACKSTREET_ENV")
+    if override:
+        return Path(override).expanduser()
+    return home_dir() / ".env"
 
 
 # --------------------------------------------------------------------------
@@ -152,6 +160,7 @@ DEFAULTS: Dict[str, Any] = {
         "approval_timeout": 300,
         "telegram": {
             "bot_token": "",
+            "bot_token_env": "ACKSTREET_TELEGRAM_BOT_TOKEN",
             "allowed_user_ids": [],
             "allow_group_chats": False,
             "update_offset": 0,
@@ -179,6 +188,14 @@ def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]
         else:
             out[key] = value
     return out
+
+
+def _repair_hint() -> str:
+    return (
+        "The configuration appears incomplete or corrupted. "
+        "Run `ackstreet-install` to reconfigure safely, or "
+        "`ackstreet init --force` to rebuild defaults."
+    )
 
 
 def _coerce(value: str) -> Any:
@@ -239,6 +256,61 @@ def _apply_env_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
             if key in cfg[section]:
                 cfg[section][key] = _coerce(raw)
     return cfg
+
+
+def load_env_file(path: Optional[Path] = None, override: bool = False) -> Dict[str, str]:
+    """Load KEY=VALUE lines from an env file into ``os.environ``.
+
+    Existing environment variables win by default.
+    """
+    target = Path(path).expanduser() if path else env_path()
+    loaded: Dict[str, str] = {}
+    if not target.exists():
+        return loaded
+    try:
+        for line in target.read_text(encoding="utf-8").splitlines():
+            text = line.strip()
+            if not text or text.startswith("#") or "=" not in text:
+                continue
+            key, value = text.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if not key:
+                continue
+            loaded[key] = value
+            if override or key not in os.environ:
+                os.environ[key] = value
+    except OSError:
+        return loaded
+    return loaded
+
+
+def secure_private_file(path: Path) -> None:
+    """Best-effort private permissions for secret files."""
+    if os.name == "nt":
+        user = os.environ.get("USERNAME", "")
+        if not user:
+            return
+        try:
+            subprocess.run(
+                ["icacls", str(path), "/inheritance:r"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["icacls", str(path), "/grant:r", f"{user}:(R,W)"],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError:
+            return
+        return
+    try:
+        path.chmod(0o600)
+    except OSError:
+        return
 
 
 def _dump_toml(data: Dict[str, Any]) -> str:
@@ -330,6 +402,7 @@ class Config:
     @classmethod
     def load(cls, path: Optional[Path] = None) -> Config:
         """Load defaults, layer the TOML file, then environment overrides."""
+        load_env_file()
         target = Path(path).expanduser() if path else config_path()
         data = copy.deepcopy(DEFAULTS)
 
@@ -352,7 +425,10 @@ class Config:
     # -- accessors ---------------------------------------------------------
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
-        return self.data.get(section, {}).get(key, default)
+        bucket = self.data.get(section, {})
+        if not isinstance(bucket, dict):
+            return default
+        return bucket.get(key, default)
 
     def set(self, section: str, key: str, value: Any) -> None:
         """Set a value, creating intermediate tables for dotted keys.
@@ -363,6 +439,10 @@ class Config:
         header, making the config file unparseable.
         """
         target = self.data.setdefault(section, {})
+        if not isinstance(target, dict):
+            raise KeyError(
+                f"Section '{section}' is not a table. {_repair_hint()}"
+            )
         parts = [p for p in str(key).split(".") if p]
         if not parts:
             raise KeyError("config key must not be empty")
@@ -422,15 +502,22 @@ class Config:
         The provider's model can be overridden by ``agent.model``.
         """
         providers = self.data.get("providers", {})
+        if not isinstance(providers, dict):
+            raise KeyError(f"[providers] must be a table. {_repair_hint()}")
         chosen = name or self.get("agent", "provider", "openai")
 
         if chosen not in providers:
             available = ", ".join(sorted(providers)) or "(none configured)"
             raise KeyError(
-                f"Provider '{chosen}' is not defined in the config. Available: {available}"
+                f"Provider '{chosen}' is not defined in the config. Available: "
+                f"{available}. {_repair_hint()}"
             )
 
         raw = providers[chosen]
+        if not isinstance(raw, dict):
+            raise KeyError(
+                f"providers.{chosen} must be a table. {_repair_hint()}"
+            )
         api_key = ""
         key_env = raw.get("api_key_env") or ""
         if key_env:

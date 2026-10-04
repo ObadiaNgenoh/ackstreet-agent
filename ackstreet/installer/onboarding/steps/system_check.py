@@ -1,6 +1,7 @@
 """System requirements check step."""
 
-import subprocess
+import shutil
+import sys
 from ackstreet.installer.ui.terminal import Terminal
 
 
@@ -29,8 +30,8 @@ class SystemCheckStep:
             self.ui.warning("curl not found (optional, but recommended)")
 
         # Check Python
-        if self._has_command("python3"):
-            self.ui.success("python3 found")
+        if sys.executable:
+            self.ui.success(f"python found at {sys.executable}")
         else:
             self.ui.error("python3 not found")
             return False
@@ -40,13 +41,4 @@ class SystemCheckStep:
     @staticmethod
     def _has_command(cmd: str) -> bool:
         """Check if command exists."""
-        try:
-            subprocess.run(
-                ["which", cmd],
-                capture_output=True,
-                check=True,
-                timeout=2,
-            )
-            return True
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            return False
+        return shutil.which(cmd) is not None

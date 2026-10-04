@@ -31,3 +31,13 @@ def validate_user_id(user_id: str) -> bool:
 def validate_url(url: str) -> bool:
     """Validate URL format."""
     return url.startswith(("http://", "https://"))
+
+
+def validate_env_var_name(name: str) -> bool:
+    """Validate an environment variable name."""
+    return bool(re.match(r"^[A-Z_][A-Z0-9_]*$", (name or "").strip()))
+
+
+def validate_non_empty(value: str) -> bool:
+    """Validate that the input is non-empty."""
+    return bool((value or "").strip())
